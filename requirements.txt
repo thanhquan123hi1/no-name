@@ -1,0 +1,14 @@
+albumentations
+lmdb
+numpy
+opencv-python
+Pillow
+protobuf
+regex
+scikit-learn
+tensorboard
+torch
+torchvision
+tqdm
+transformers
+PyYAML

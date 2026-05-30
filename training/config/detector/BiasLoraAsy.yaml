@@ -1,0 +1,131 @@
+# model setting
+pretrained: null
+model_name: bias_lora_asy
+backbone_name: vit
+
+# Loss settings: CrossEntropy + alpha_asy * AsySupCon
+weight_real: 1.0
+weight_fake: 1.3
+label_smoothing: 0.1
+use_asy_supcon: true
+alpha_asy: 0.05
+alpha_asy_warmup_epochs: 1
+alpha_asy_decay_start_epoch: 3
+alpha_asy_decay_end_epoch: 6
+alpha_asy_min: 0.01
+temperature: 0.07
+base_temperature: 0.07
+real_label: 0
+asy_real_weight: 1.0
+asy_fake_weight: 0.25
+asy_cross_weight: 1.0
+asy_cross_margin: 0.0
+
+# Projection head for AsySupCon: 1024 -> 512 -> 128
+feature_dim: 1024
+projection_hidden_dim: 512
+projection_dim: 128
+
+# LoRA-Bias adaptation
+use_lora: true
+train_backbone_bias: true
+strict_trainable_check: true
+lora_last_k_blocks: 2
+lora_rank: 4
+lora_alpha: 8.0
+lora_dropout: 0.1
+lora_targets: [q_proj, v_proj]
+
+# backbone setting
+backbone_config:
+  mode: original
+  num_classes: 2
+  inc: 3
+  dropout: false
+
+# dataset
+all_dataset:
+  [
+    FaceForensics++,
+    FF-F2F,
+    FF-DF,
+    FF-FS,
+    FF-NT,
+    FaceShifter,
+    DeepFakeDetection,
+    Celeb-DF-v1,
+    Celeb-DF-v2,
+    DFDCP,
+    DFDC,
+    DeeperForensics-1.0,
+    UADFV,
+  ]
+train_dataset: [FaceForensics++]
+test_dataset: [Celeb-DF-v2, FaceShifter, DeeperForensics-1.0]
+
+compression: c23
+train_batchSize: 128
+test_batchSize: 256
+workers: 8
+frame_num:
+  train: 8
+  test: 32
+resolution: 224
+with_mask: false
+with_landmark: false
+
+# data augmentation
+use_data_augmentation: true
+data_aug:
+  flip_prob: 0.5
+  rotate_prob: 0.5
+  rotate_limit: [-10, 10]
+  blur_prob: 0.5
+  blur_limit: [3, 7]
+  brightness_prob: 0.5
+  brightness_limit: [-0.1, 0.1]
+  contrast_limit: [-0.1, 0.1]
+  quality_lower: 40
+  quality_upper: 100
+
+# CLIP mean/std
+mean: [0.48145466, 0.4578275, 0.40821073]
+std: [0.26862954, 0.26130258, 0.27577711]
+
+# optimizer config
+optimizer:
+  type: adam
+  adam:
+    lr: 0.0001
+    beta1: 0.9
+    beta2: 0.999
+    eps: 0.00000001
+    weight_decay: 0.0001
+    amsgrad: false
+
+# training config
+lr_scheduler: cosine
+scheduler_step_per_epoch: true
+lr_T_max: 10
+lr_eta_min: 0.000001
+nEpochs: 10
+start_epoch: 0
+save_epoch: 1
+rec_iter: 100
+logdir: /kaggle/tmp/logs
+manualSeed: 7749
+save_ckpt: true
+save_feat: true
+save_avg: true
+
+# loss function
+loss_func: cross_entropy
+losstype: ce_asy_supcon_lora_bias
+
+# metric
+metric_scoring: auc
+
+# cuda
+ngpu: 1
+cuda: true
+cudnn: true
