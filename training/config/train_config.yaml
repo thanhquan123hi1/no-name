@@ -6,7 +6,7 @@ lmdb_dir:  './datasets/lmdb'
 dataset_json_folder: '/content/DeepfakeBench/preprocessing/dataset_json'
 SWA: False
 save_avg: True
-log_dir: /content/drive/MyDrive/Ours
+log_dir: /content/drive/MyDrive/Quan_Kiu
 # label settings
 label_dict:
   # DFD
