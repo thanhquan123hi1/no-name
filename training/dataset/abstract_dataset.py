@@ -189,13 +189,17 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
 
                 total_frames = len(frame_paths)
                 if self.frame_num < total_frames:
-                    total_frames = self.frame_num
                     if self.video_level:
-                        start_frame = random.randint(0, total_frames - self.frame_num) if self.mode == 'train' else 0
-                        frame_paths = frame_paths[start_frame:start_frame + self.frame_num]
+                        if self.mode == 'train':
+                            start_frame = random.randint(0, total_frames - self.frame_num)
+                            frame_paths = frame_paths[start_frame:start_frame + self.frame_num]
+                        else:
+                            sample_idx = np.linspace(0, total_frames - 1, self.frame_num, dtype=int)
+                            frame_paths = [frame_paths[i] for i in sample_idx]
                     else:
-                        step = total_frames // self.frame_num
-                        frame_paths = [frame_paths[i] for i in range(0, total_frames, step)][:self.frame_num]
+                        sample_idx = np.linspace(0, total_frames - 1, self.frame_num, dtype=int)
+                        frame_paths = [frame_paths[i] for i in sample_idx]
+                    total_frames = len(frame_paths)
                 
                 if self.video_level:
                     if self.clip_size is None:

@@ -25,12 +25,14 @@ asy_cross_margin: 0.0
 feature_dim: 1024
 projection_hidden_dim: 512
 projection_dim: 128
+feature_dropout: 0.2
+projection_dropout: 0.1
 
 # LoRA-Bias adaptation
 use_lora: true
 train_backbone_bias: true
 strict_trainable_check: true
-lora_last_k_blocks: 2
+lora_last_k_blocks: 4
 lora_rank: 4
 lora_alpha: 8.0
 lora_dropout: 0.1
@@ -123,7 +125,7 @@ loss_func: cross_entropy
 losstype: ce_asy_supcon_lora_bias
 
 # metric
-metric_scoring: auc
+metric_scoring: video_auc
 
 # cuda
 ngpu: 1

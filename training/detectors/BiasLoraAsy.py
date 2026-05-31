@@ -176,6 +176,8 @@ class BiasLoraAsyDetector(AbstractDetector):
         self.projection_hidden_dim = int(self.config.get("projection_hidden_dim", 512))
         self.projection_dim = int(self.config.get("projection_dim", 128))
         self.normalize_eps = float(self.config.get("normalize_eps", 1e-6))
+        feature_dropout = float(self.config.get("feature_dropout", 0.0))
+        projection_dropout = float(self.config.get("projection_dropout", feature_dropout))
 
         self.use_lora = bool(self.config.get("use_lora", True))
         self.train_backbone_bias = bool(self.config.get("train_backbone_bias", True))
@@ -183,6 +185,10 @@ class BiasLoraAsyDetector(AbstractDetector):
         self.use_asy_supcon = bool(self.config.get("use_asy_supcon", True))
 
         self.backbone = self.build_backbone(self.config)
+        self.feature_dropout = nn.Dropout(p=feature_dropout) if feature_dropout > 0 else nn.Identity()
+        self.projection_dropout = (
+            nn.Dropout(p=projection_dropout) if projection_dropout > 0 else nn.Identity()
+        )
         self.head = nn.Linear(self.feature_dim, 2)
         self.projection_head = ProjectionHead(
             in_dim=self.feature_dim,
@@ -415,10 +421,10 @@ class BiasLoraAsyDetector(AbstractDetector):
         raw_features = self.features(data_dict)
         norm_features = F.normalize(raw_features, p=2, dim=1, eps=self.normalize_eps)
 
-        pred = self.classifier(norm_features)
+        pred = self.classifier(self.feature_dropout(norm_features))
         prob = torch.softmax(pred, dim=1)[:, 1]
 
-        proj_features = self.projection_head(norm_features)
+        proj_features = self.projection_head(self.projection_dropout(norm_features))
         proj_features = F.normalize(proj_features, p=2, dim=1, eps=self.normalize_eps)
 
         return {
