@@ -261,8 +261,9 @@ class BiasLoraAsyDetector(AbstractDetector):
 
         for param in self.head.parameters():
             param.requires_grad = True
+        asy_supcon_active = self.use_asy_supcon and self.alpha_asy > 0
         for param in self.projection_head.parameters():
-            param.requires_grad = True
+            param.requires_grad = asy_supcon_active
 
         if self.strict_trainable_check:
             self._validate_trainable_backbone()
@@ -275,6 +276,8 @@ class BiasLoraAsyDetector(AbstractDetector):
             f"({self.trainable_param_summary['percent']:.4f}%)."
         )
         logger.info("LoRA modules: %s", self.lora_module_names)
+        if not asy_supcon_active:
+            logger.info("AsySupCon disabled; projection head is frozen and skipped.")
 
     def _inject_lora_to_last_blocks(self) -> List[str]:
         layers = getattr(getattr(self.backbone, "encoder", None), "layers", None)
@@ -389,6 +392,9 @@ class BiasLoraAsyDetector(AbstractDetector):
         return self.trainable_param_summary, self.lora_module_names
 
     def _current_alpha_asy_value(self) -> float:
+        if not self.use_asy_supcon or self.alpha_asy <= 0:
+            return 0.0
+
         alpha = self.alpha_asy
         if self.training and self.alpha_asy_warmup_epochs > 0:
             epoch = int(getattr(self, "epoch", 0))
@@ -424,8 +430,10 @@ class BiasLoraAsyDetector(AbstractDetector):
         pred = self.classifier(self.feature_dropout(norm_features))
         prob = torch.softmax(pred, dim=1)[:, 1]
 
-        proj_features = self.projection_head(self.projection_dropout(norm_features))
-        proj_features = F.normalize(proj_features, p=2, dim=1, eps=self.normalize_eps)
+        proj_features = None
+        if self.training and self.use_asy_supcon and self._current_alpha_asy_value() > 0:
+            proj_features = self.projection_head(self.projection_dropout(norm_features))
+            proj_features = F.normalize(proj_features, p=2, dim=1, eps=self.normalize_eps)
 
         return {
             "cls": pred,
@@ -446,8 +454,11 @@ class BiasLoraAsyDetector(AbstractDetector):
         zero = pred.new_zeros(())
         asy_parts = {"loss_asy_pull": zero, "loss_asy_cross": zero}
         if self.training and self.use_asy_supcon and alpha_asy_value > 0:
+            feat_proj = pred_dict.get("feat_proj", None)
+            if feat_proj is None:
+                raise RuntimeError("AsySupCon is enabled but feat_proj was not computed.")
             loss_asy_supcon, asy_parts = self.loss_asy_supcon(
-                pred_dict["feat_proj"],
+                feat_proj,
                 label,
                 return_parts=True,
             )
