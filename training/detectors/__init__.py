@@ -8,3 +8,4 @@ sys.path.append(project_root_dir)
 
 from metrics.registry import DETECTOR
 from .BiasLoraAsy import BiasLoraAsyDetector
+from .BiasRealAnchor import BiasRealAnchorDetector
