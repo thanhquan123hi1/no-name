@@ -1,0 +1,442 @@
+import logging
+from typing import Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .base_detector import AbstractDetector
+from detectors import DETECTOR
+
+
+logger = logging.getLogger(__name__)
+
+
+class WeakStrongKLLoss(nn.Module):
+    """KL consistency from a detached weak-view teacher to a strong-view student."""
+
+    def __init__(
+        self,
+        temperature: float = 1.0,
+        confidence_threshold: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if temperature <= 0:
+            raise ValueError("consistency_temperature must be > 0.")
+        if not 0.0 <= confidence_threshold <= 1.0:
+            raise ValueError("consistency_confidence_threshold must be in [0, 1].")
+
+        self.temperature = float(temperature)
+        self.confidence_threshold = float(confidence_threshold)
+
+    def forward(
+        self,
+        weak_logits: torch.Tensor,
+        strong_logits: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if weak_logits.shape != strong_logits.shape:
+            raise ValueError(
+                "Weak and strong logits must have the same shape, got "
+                f"{tuple(weak_logits.shape)} and {tuple(strong_logits.shape)}."
+            )
+        if weak_logits.dim() != 2:
+            raise ValueError("Consistency logits must have shape [B, C].")
+
+        temperature = self.temperature
+        teacher_prob = F.softmax(weak_logits / temperature, dim=1).detach()
+        student_log_prob = F.log_softmax(strong_logits / temperature, dim=1)
+        per_sample_kl = F.kl_div(
+            student_log_prob,
+            teacher_prob,
+            reduction="none",
+        ).sum(dim=1) * (temperature**2)
+
+        teacher_confidence = teacher_prob.max(dim=1).values
+        selected = teacher_confidence.ge(self.confidence_threshold)
+        if selected.any():
+            loss = per_sample_kl[selected].mean()
+        else:
+            # Keep the zero differentiable with respect to the student branch.
+            loss = strong_logits.sum() * 0.0
+
+        selected_fraction = selected.to(strong_logits.dtype).mean()
+        mean_teacher_confidence = teacher_confidence.mean()
+        return loss, selected_fraction, mean_teacher_confidence
+
+
+@DETECTOR.register_module(module_name="bias_consistency")
+class BiasConsistencyDetector(AbstractDetector):
+    """CLIP ViT-L/14 with BitFit-style bias tuning, CE, and consistency."""
+
+    def __init__(self, config=None, backbone: Optional[nn.Module] = None) -> None:
+        super(BiasConsistencyDetector, self).__init__()
+        self.config = config or {}
+
+        if bool(self.config.get("use_lora", False)):
+            raise ValueError("BiasConsistencyDetector does not support LoRA.")
+        if not bool(self.config.get("train_backbone_bias", True)):
+            raise ValueError(
+                "BiasConsistencyDetector requires train_backbone_bias=true."
+            )
+
+        self.feature_dim = int(self.config.get("feature_dim", 1024))
+        self.normalize_eps = float(self.config.get("normalize_eps", 1e-6))
+        self.use_consistency = bool(self.config.get("use_consistency", True))
+        if self.use_consistency and not bool(
+            self.config.get("use_consistency_views", True)
+        ):
+            raise ValueError(
+                "use_consistency=true requires use_consistency_views=true."
+            )
+        self.strict_trainable_check = bool(
+            self.config.get("strict_trainable_check", True)
+        )
+        self.strict_clip_architecture = bool(
+            self.config.get("strict_clip_architecture", False)
+        )
+        self.epoch = int(self.config.get("start_epoch", 0))
+
+        logger.info("Loading CLIP ViT-L/14 for Bias + CE + Consistency.")
+        self.backbone = (
+            backbone if backbone is not None else self.build_backbone(self.config)
+        )
+        self.head = nn.Linear(self.feature_dim, 2)
+
+        self.build_loss(self.config)
+        self.prob, self.label = [], []
+        self.correct, self.total = 0, 0
+
+        self._setup_trainable_parameters()
+        if self.strict_clip_architecture:
+            self._validate_clip_architecture()
+
+    def build_backbone(self, config):
+        # Import lazily so unit tests can inject a tiny backbone without loading CLIP.
+        from transformers import CLIPModel
+
+        model_name = config.get("clip_model_name", "openai/clip-vit-large-patch14")
+        try:
+            clip_model = CLIPModel.from_pretrained(model_name)
+        except Exception:
+            clip_model = CLIPModel.from_pretrained(
+                model_name,
+                local_files_only=True,
+            )
+        # Intentionally use the 1024-D post-LayerNorm CLS feature and omit the
+        # frozen 1024 -> 768 CLIP visual projection.
+        return clip_model.vision_model
+
+    def build_loss(self, config) -> None:
+        class_weights = torch.tensor(
+            [
+                float(config.get("weight_real", 1.0)),
+                float(config.get("weight_fake", 1.0)),
+            ],
+            dtype=torch.float32,
+        )
+        self.loss_ce = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=float(config.get("label_smoothing", 0.1)),
+        )
+
+        self.alpha_consistency_max = float(
+            config.get("alpha_consistency_max", 0.5)
+        )
+        self.alpha_consistency_start_epoch = int(
+            config.get("alpha_consistency_start_epoch", 0)
+        )
+        self.alpha_consistency_warmup_epochs = int(
+            config.get("alpha_consistency_warmup_epochs", 3)
+        )
+        if self.alpha_consistency_max < 0:
+            raise ValueError("alpha_consistency_max must be >= 0.")
+        if self.alpha_consistency_warmup_epochs < 0:
+            raise ValueError("alpha_consistency_warmup_epochs must be >= 0.")
+
+        self.loss_consistency = WeakStrongKLLoss(
+            temperature=float(config.get("consistency_temperature", 1.0)),
+            confidence_threshold=float(
+                config.get("consistency_confidence_threshold", 0.0)
+            ),
+        )
+
+    def _setup_trainable_parameters(self) -> None:
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad = False
+
+        for name, parameter in self.backbone.named_parameters():
+            if name.endswith(".bias"):
+                parameter.requires_grad = True
+
+        for parameter in self.head.parameters():
+            parameter.requires_grad = True
+
+        if self.strict_trainable_check:
+            self._validate_trainable_parameters()
+
+        self.trainable_param_summary = self._summarize_trainable_parameters()
+        logger.info(
+            "BiasConsistency initialized. Trainable params: %s / %s (%.4f%%).",
+            f"{self.trainable_param_summary['trainable']:,}",
+            f"{self.trainable_param_summary['total']:,}",
+            self.trainable_param_summary["percent"],
+        )
+
+    def _validate_trainable_parameters(self) -> None:
+        forbidden = [
+            name
+            for name, _ in self.named_parameters()
+            if "lora_A" in name or "lora_B" in name
+        ]
+        if forbidden:
+            raise RuntimeError(
+                f"LoRA parameters are forbidden in BiasConsistencyDetector: {forbidden[:20]}"
+            )
+
+        invalid_backbone = []
+        for name, parameter in self.backbone.named_parameters():
+            should_train = name.endswith(".bias")
+            if parameter.requires_grad != should_train:
+                invalid_backbone.append(name)
+        if invalid_backbone:
+            raise RuntimeError(
+                "Backbone trainability must be restricted to parameters ending in "
+                f"'.bias'. Invalid parameters: {invalid_backbone[:20]}"
+            )
+
+        frozen_head = [
+            name
+            for name, parameter in self.head.named_parameters()
+            if not parameter.requires_grad
+        ]
+        if frozen_head:
+            raise RuntimeError(
+                f"Classifier parameters must all be trainable: {frozen_head}"
+            )
+
+    def _validate_clip_architecture(self) -> None:
+        clip_config = getattr(self.backbone, "config", None)
+        if clip_config is None:
+            raise RuntimeError("CLIP backbone does not expose a vision config.")
+
+        expected = {
+            "hidden_size": int(self.config.get("expected_clip_hidden_size", 1024)),
+            "intermediate_size": int(
+                self.config.get("expected_clip_intermediate_size", 4096)
+            ),
+            "num_hidden_layers": int(
+                self.config.get("expected_clip_num_hidden_layers", 24)
+            ),
+            "num_attention_heads": int(
+                self.config.get("expected_clip_num_attention_heads", 16)
+            ),
+            "image_size": int(self.config.get("expected_clip_image_size", 224)),
+            "patch_size": int(self.config.get("expected_clip_patch_size", 14)),
+        }
+        mismatches = {
+            name: (getattr(clip_config, name, None), expected_value)
+            for name, expected_value in expected.items()
+            if getattr(clip_config, name, None) != expected_value
+        }
+        if mismatches:
+            raise RuntimeError(
+                f"Unexpected CLIP vision architecture (actual, expected): {mismatches}"
+            )
+
+        expected_bias_params = int(
+            self.config.get("expected_backbone_bias_params", 272384)
+        )
+        actual_bias_params = sum(
+            parameter.numel()
+            for name, parameter in self.backbone.named_parameters()
+            if name.endswith(".bias")
+        )
+        if actual_bias_params != expected_bias_params:
+            raise RuntimeError(
+                "Unexpected number of CLIP backbone bias parameters: "
+                f"actual={actual_bias_params:,}, expected={expected_bias_params:,}."
+            )
+
+    def _summarize_trainable_parameters(self) -> Dict[str, float]:
+        total = sum(parameter.numel() for parameter in self.parameters())
+        trainable = sum(
+            parameter.numel()
+            for parameter in self.parameters()
+            if parameter.requires_grad
+        )
+        return {
+            "total": total,
+            "trainable": trainable,
+            "percent": 100.0 * trainable / max(total, 1),
+        }
+
+    def get_trainable_summary(self) -> Dict[str, float]:
+        return self.trainable_param_summary
+
+    def _current_alpha_consistency_value(self) -> float:
+        if not self.training or not self.use_consistency:
+            return 0.0
+
+        epoch = float(getattr(self, "epoch", 0))
+        if self.alpha_consistency_warmup_epochs == 0:
+            progress = (
+                1.0 if epoch >= self.alpha_consistency_start_epoch else 0.0
+            )
+        else:
+            progress = (
+                epoch - self.alpha_consistency_start_epoch
+            ) / self.alpha_consistency_warmup_epochs
+            progress = min(max(progress, 0.0), 1.0)
+        return self.alpha_consistency_max * progress
+
+    def _encode_images(
+        self,
+        images: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        outputs = self.backbone(images)
+        if not hasattr(outputs, "pooler_output"):
+            raise RuntimeError("The vision backbone must return pooler_output.")
+        raw_features = outputs.pooler_output
+        if raw_features.dim() != 2:
+            raise ValueError("Backbone pooler_output must have shape [B, D].")
+        if raw_features.size(1) != self.feature_dim:
+            raise ValueError(
+                f"Expected pooler feature dimension {self.feature_dim}, "
+                f"got {raw_features.size(1)}."
+            )
+
+        normalized_features = F.normalize(
+            raw_features,
+            p=2,
+            dim=1,
+            eps=self.normalize_eps,
+        )
+        logits = self.head(normalized_features)
+        return raw_features, normalized_features, logits
+
+    def features(self, data_dict: dict) -> torch.Tensor:
+        raw_features, _, _ = self._encode_images(data_dict["image"])
+        return raw_features
+
+    def classifier(self, features: torch.Tensor) -> torch.Tensor:
+        return self.head(features)
+
+    def forward(self, data_dict: dict, inference=False) -> dict:
+        weak_raw, weak_norm, weak_logits = self._encode_images(data_dict["image"])
+
+        strong_logits = None
+        strong_raw = None
+        strong_norm = None
+        consistency_active = self.training and self.use_consistency and not inference
+        if consistency_active:
+            if data_dict.get("image_strong") is None:
+                raise RuntimeError(
+                    "Consistency training requires data_dict['image_strong']. "
+                    "Enable use_consistency_views in the dataset config."
+                )
+            strong_raw, strong_norm, strong_logits = self._encode_images(
+                data_dict["image_strong"]
+            )
+            logits = 0.5 * (weak_logits + strong_logits)
+        else:
+            logits = weak_logits
+
+        fake_probability = torch.softmax(logits, dim=1)[:, 1]
+        return {
+            "cls": logits,
+            "prob": fake_probability,
+            "feat": weak_raw,
+            "feat_norm": weak_norm,
+            "cls_weak": weak_logits,
+            "cls_strong": strong_logits,
+            "feat_strong": strong_raw,
+            "feat_norm_strong": strong_norm,
+        }
+
+    def get_losses(self, data_dict: dict, pred_dict: dict) -> dict:
+        labels = data_dict["label"].contiguous().view(-1)
+        ensemble_logits = pred_dict["cls"]
+        weak_logits = pred_dict["cls_weak"]
+        strong_logits = pred_dict.get("cls_strong")
+        zero = ensemble_logits.sum() * 0.0
+
+        consistency_active = self.training and self.use_consistency
+        if consistency_active:
+            if strong_logits is None:
+                raise RuntimeError(
+                    "Consistency is enabled but strong-view logits were not computed."
+                )
+            loss_ce_weak = self.loss_ce(weak_logits, labels)
+            loss_ce_strong = self.loss_ce(strong_logits, labels)
+            loss_ce = 0.5 * (loss_ce_weak + loss_ce_strong)
+            (
+                loss_consistency,
+                consistency_selected_fraction,
+                teacher_confidence,
+            ) = self.loss_consistency(weak_logits, strong_logits)
+            loss_consistency = torch.nan_to_num(
+                loss_consistency,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+        else:
+            loss_ce = self.loss_ce(ensemble_logits, labels)
+            loss_ce_weak = loss_ce
+            loss_ce_strong = zero
+            loss_consistency = zero
+            consistency_selected_fraction = zero.detach()
+            teacher_confidence = zero.detach()
+
+        alpha_consistency = ensemble_logits.new_tensor(
+            self._current_alpha_consistency_value()
+        )
+        weighted_consistency = alpha_consistency * loss_consistency
+        overall_loss = loss_ce + weighted_consistency
+
+        loss_dict = {
+            "overall": overall_loss,
+            "loss_ce": loss_ce,
+            "loss_ce_weak": loss_ce_weak,
+            "loss_ce_strong": loss_ce_strong,
+            "loss_consistency": loss_consistency,
+            "alpha_consistency": alpha_consistency,
+            "weighted_consistency": weighted_consistency,
+            "consistency_selected_fraction": consistency_selected_fraction.detach(),
+            "teacher_confidence": teacher_confidence.detach(),
+        }
+
+        with torch.no_grad():
+            real_mask = labels.eq(0)
+            fake_mask = labels.eq(1)
+            loss_dict["real_loss"] = (
+                self.loss_ce(ensemble_logits[real_mask], labels[real_mask])
+                if real_mask.any()
+                else zero.detach()
+            )
+            loss_dict["fake_loss"] = (
+                self.loss_ce(ensemble_logits[fake_mask], labels[fake_mask])
+                if fake_mask.any()
+                else zero.detach()
+            )
+            loss_dict["prediction_agreement"] = (
+                weak_logits.argmax(dim=1).eq(strong_logits.argmax(dim=1)).float().mean()
+                if strong_logits is not None
+                else ensemble_logits.new_tensor(1.0)
+            )
+
+        return loss_dict
+
+    def get_train_metrics(self, data_dict: dict, pred_dict: dict) -> dict:
+        from metrics.base_metrics_class import calculate_metrics_for_train
+
+        auc, eer, acc, ap = calculate_metrics_for_train(
+            data_dict["label"].detach(),
+            pred_dict["cls"].detach(),
+        )
+        return {
+            "acc": acc,
+            "auc": auc,
+            "eer": eer,
+            "ap": ap,
+        }

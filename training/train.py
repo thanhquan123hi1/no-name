@@ -297,7 +297,12 @@ def main():
 
     # start training
     for epoch in range(config['start_epoch'], config['nEpochs'] + 1):
-        trainer.model.epoch = epoch
+        epoch_model = (
+            trainer.model.module
+            if hasattr(trainer.model, 'module')
+            else trainer.model
+        )
+        epoch_model.epoch = epoch
         best_metric = trainer.train_epoch(
                     epoch=epoch,
                     train_data_loader=train_data_loader,

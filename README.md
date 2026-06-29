@@ -49,6 +49,21 @@ python training/train.py \
   --test_dataset "Celeb-DF-v2"
 ```
 
+Train the bias-only CLIP detector with weak-to-strong consistency:
+
+```bash
+python training/train.py \
+  --detector_path training/config/detector/BiasConsistency.yaml \
+  --train_dataset "FaceForensics++" \
+  --test_dataset "Celeb-DF-v2" "FaceShifter" "DeeperForensics-1.0"
+```
+
+`BiasConsistency` trains only CLIP vision-backbone parameters whose names end
+in `.bias`, plus the binary classifier. Its objective is the mean
+cross-entropy of weak/strong views plus a scheduled KL divergence from the
+detached weak-view prediction to the strong-view prediction. Evaluation uses a
+single image view.
+
 Optional fine-tuning from a checkpoint:
 
 ```bash

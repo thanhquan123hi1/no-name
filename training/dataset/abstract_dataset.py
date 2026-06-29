@@ -46,6 +46,14 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
         self.video_level = config.get('video_mode', False)
         self.clip_size = config.get('clip_size', None)
         self.lmdb = config.get('lmdb', False)
+        self.use_consistency_views = bool(
+            mode == 'train' and config.get('use_consistency_views', False)
+        )
+        if self.use_consistency_views and not config.get('use_data_augmentation', False):
+            raise ValueError(
+                'use_consistency_views requires use_data_augmentation=true so the '
+                'strong view is meaningfully different from the weak view.'
+            )
         self.image_list = []
         self.label_list = []
         
@@ -84,6 +92,29 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
         }
         
         self.transform = self.init_data_aug_method()
+        self.weak_transform = (
+            self.init_weak_data_aug_method()
+            if self.use_consistency_views
+            else None
+        )
+
+    def _keypoint_params(self):
+        return (
+            A.KeypointParams(format='xy', remove_invisible=False)
+            if self.config['with_landmark']
+            else None
+        )
+
+    def init_weak_data_aug_method(self):
+        """Preserve forensic traces while adding a small invariance challenge."""
+        return A.Compose(
+            [
+                A.HorizontalFlip(
+                    p=float(self.config.get('consistency_weak_flip_prob', 0.5))
+                ),
+            ],
+            keypoint_params=self._keypoint_params(),
+        )
         
     def init_data_aug_method(self):
         trans = A.Compose([           
@@ -99,10 +130,10 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
                 A.RandomBrightnessContrast(brightness_limit=self.config['data_aug']['brightness_limit'], contrast_limit=self.config['data_aug']['contrast_limit']),
                 A.FancyPCA(),
                 A.HueSaturationValue()
-            ], p=0.5),
+            ], p=float(self.config['data_aug'].get('brightness_prob', 0.5))),
             A.ImageCompression(quality_lower=self.config['data_aug']['quality_lower'], quality_upper=self.config['data_aug']['quality_upper'], p=0.5)
-        ], 
-            keypoint_params=A.KeypointParams(format='xy', remove_invisible=False) if self.config['with_landmark'] else None
+        ],
+            keypoint_params=self._keypoint_params()
         )
         return trans
 
@@ -363,8 +394,19 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
         normalize = T.Normalize(mean=mean, std=std)
         return normalize(img)
 
-    def data_aug(self, img, landmark=None, mask=None, augmentation_seed=None):
+    def data_aug(
+        self,
+        img,
+        landmark=None,
+        mask=None,
+        augmentation_seed=None,
+        transform=None,
+    ):
+        python_random_state = None
+        numpy_random_state = None
         if augmentation_seed is not None:
+            python_random_state = random.getstate()
+            numpy_random_state = np.random.get_state()
             random.seed(augmentation_seed)
             np.random.seed(augmentation_seed)
         
@@ -379,7 +421,13 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             if mask.max() > 0:
                 kwargs['mask'] = mask
 
-        transformed = self.transform(**kwargs)
+        selected_transform = self.transform if transform is None else transform
+        try:
+            transformed = selected_transform(**kwargs)
+        finally:
+            if augmentation_seed is not None:
+                random.setstate(python_random_state)
+                np.random.set_state(numpy_random_state)
         
         augmented_img = transformed['image']
         augmented_landmark = transformed.get('keypoints')
@@ -394,10 +442,6 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
                 allow_rescale=False,
             )
 
-        if augmentation_seed is not None:
-            random.seed()
-            np.random.seed()
-
         return augmented_img, augmented_landmark, augmented_mask
 
     def __getitem__(self, index, no_norm=False):
@@ -408,14 +452,19 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             image_paths = [image_paths]
 
         image_tensors = []
+        strong_image_tensors = []
         landmark_tensors = []
         mask_tensors = []
-        augmentation_seed = None
+        augmentation_seed = random.randint(0, 2**32 - 1) if self.video_level else None
+        weak_augmentation_seed = None
+        strong_augmentation_seed = None
+        if self.use_consistency_views:
+            # Fixed per sample (and therefore per video clip) but independent
+            # across the weak and strong branches.
+            weak_augmentation_seed = random.randint(0, 2**32 - 1)
+            strong_augmentation_seed = random.randint(0, 2**32 - 1)
 
         for image_path in image_paths:
-            if self.video_level and image_path == image_paths[0]:
-                augmentation_seed = random.randint(0, 2**32 - 1)
-
             mask_path = image_path.replace('frames', 'masks')
             landmark_path = image_path.replace('frames', 'landmarks').replace('.png', '.npy')
 
@@ -439,40 +488,80 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             else:
                 landmarks = None
 
-            if self.mode == 'train' and self.config['use_data_augmentation']:
+            strong_image_trans = None
+            if self.use_consistency_views:
+                image_trans, landmarks_trans, mask_trans = self.data_aug(
+                    image,
+                    landmarks,
+                    mask,
+                    weak_augmentation_seed,
+                    transform=self.weak_transform,
+                )
+                strong_image_trans, _, _ = self.data_aug(
+                    image,
+                    deepcopy(landmarks),
+                    deepcopy(mask),
+                    strong_augmentation_seed,
+                    transform=self.transform,
+                )
+            elif self.mode == 'train' and self.config['use_data_augmentation']:
                 image_trans, landmarks_trans, mask_trans = self.data_aug(image, landmarks, mask, augmentation_seed)
             else:
                 image_trans, landmarks_trans, mask_trans = deepcopy(image), deepcopy(landmarks), deepcopy(mask)
             
             if not no_norm:
                 image_trans = self.normalize(self.to_tensor(image_trans))
+                if strong_image_trans is not None:
+                    strong_image_trans = self.normalize(
+                        self.to_tensor(strong_image_trans)
+                    )
                 if self.config['with_landmark']:
                     landmarks_trans = torch.from_numpy(np.asarray(landmarks_trans, dtype=np.float32))
                 if self.config['with_mask']:
                     mask_trans = torch.from_numpy(mask_trans)
 
             image_tensors.append(image_trans)
+            if strong_image_trans is not None:
+                strong_image_tensors.append(strong_image_trans)
             landmark_tensors.append(landmarks_trans)
             mask_tensors.append(mask_trans)
 
         if self.video_level:
             image_tensors = torch.stack(image_tensors, dim=0)
+            if self.use_consistency_views:
+                strong_image_tensors = torch.stack(strong_image_tensors, dim=0)
             if not any(landmark is None or (isinstance(landmark, list) and None in landmark) for landmark in landmark_tensors):
                 landmark_tensors = torch.stack(landmark_tensors, dim=0)
             if not any(m is None or (isinstance(m, list) and None in m) for m in mask_tensors):
                 mask_tensors = torch.stack(mask_tensors, dim=0)
         else:
             image_tensors = image_tensors[0]
+            if self.use_consistency_views:
+                strong_image_tensors = strong_image_tensors[0]
             if not any(landmark is None or (isinstance(landmark, list) and None in landmark) for landmark in landmark_tensors):
                 landmark_tensors = landmark_tensors[0]
             if not any(m is None or (isinstance(m, list) and None in m) for m in mask_tensors):
                 mask_tensors = mask_tensors[0]
 
+        if self.use_consistency_views:
+            return (
+                image_tensors,
+                strong_image_tensors,
+                label,
+                landmark_tensors,
+                mask_tensors,
+            )
         return image_tensors, label, landmark_tensors, mask_tensors
     
     @staticmethod
     def collate_fn(batch):
-        images, labels, landmarks, masks = zip(*batch)
+        has_consistency_views = len(batch[0]) == 5
+        strong_images = None
+        if has_consistency_views:
+            images, strong_images, labels, landmarks, masks = zip(*batch)
+            strong_images = torch.stack(strong_images, dim=0)
+        else:
+            images, labels, landmarks, masks = zip(*batch)
         images = torch.stack(images, dim=0)
         labels = torch.LongTensor(labels)
         
@@ -488,6 +577,9 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
 
         data_dict = {}
         data_dict['image'] = images
+        if has_consistency_views:
+            assert strong_images is not None
+            data_dict['image_strong'] = strong_images
         data_dict['label'] = labels
         data_dict['landmark'] = landmarks
         data_dict['mask'] = masks
