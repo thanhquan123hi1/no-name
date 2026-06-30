@@ -70,7 +70,7 @@ compression: c23
 
 # SigLIP-L/16-256 uses 256x256 input.
 # Token count is similar to CLIP ViT-L/14-224, so batch 16 can be tried first.
-train_batchSize: 16
+train_batchSize: 128
 test_batchSize: 128
 workers: 8
 
