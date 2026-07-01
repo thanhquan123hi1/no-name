@@ -10,3 +10,4 @@ from metrics.registry import DETECTOR
 from .BiasLoraAsy import BiasLoraAsyDetector
 from .BiasRealAnchor import BiasRealAnchorDetector
 from .BiasConsistency import BiasConsistencyDetector
+from .BiasArtifactConsistency import BiasArtifactConsistencyDetector

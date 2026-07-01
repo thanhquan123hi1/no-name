@@ -60,7 +60,16 @@ def prepare_training_data(config):
                 config=config,
                 mode='train',
             )
+    use_balanced_sampler = bool(
+        config.get('use_class_balanced_sampler', False)
+    )
     if config['ddp']:
+        if use_balanced_sampler:
+            raise ValueError(
+                'use_class_balanced_sampler is currently supported only for '
+                'single-process training. Disable it or add a distributed '
+                'class-balanced sampler.'
+            )
         sampler = DistributedSampler(train_set)
         train_data_loader = \
             torch.utils.data.DataLoader(
@@ -71,11 +80,20 @@ def prepare_training_data(config):
                 sampler=sampler
             )
     else:
+        sampler = (
+            build_class_balanced_sampler(
+                train_set.label_list,
+                seed=config['manualSeed'],
+            )
+            if use_balanced_sampler
+            else None
+        )
         train_data_loader = \
             torch.utils.data.DataLoader(
                 dataset=train_set,
                 batch_size=config['train_batchSize'],
-                shuffle=True,
+                shuffle=(sampler is None),
+                sampler=sampler,
                 num_workers=int(config['workers']),
                 collate_fn=train_set.collate_fn,
                 )
@@ -296,7 +314,13 @@ def main():
     trainer = Trainer(config, model, optimizer, scheduler, logger, metric_scoring, time_now=timenow)
 
     # start training
-    for epoch in range(config['start_epoch'], config['nEpochs'] + 1):
+    early_stopping_patience = int(config.get('early_stopping_patience', 0))
+    early_stopping_min_delta = float(
+        config.get('early_stopping_min_delta', 0.0)
+    )
+    early_stopping_best = None
+    epochs_without_improvement = 0
+    for epoch in range(config['start_epoch'], config['nEpochs']):
         epoch_model = (
             trainer.model.module
             if hasattr(trainer.model, 'module')
@@ -318,6 +342,47 @@ def main():
             scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             logger.info(f"Scheduler stepped after epoch {epoch}. Current lr: {current_lr}")
+
+        if early_stopping_patience > 0 and best_metric is not None:
+            selection_key = (
+                'avg'
+                if 'avg' in best_metric
+                else config['test_dataset'][0]
+            )
+            selection_metrics = best_metric.get(selection_key, {})
+            selection_value = selection_metrics.get(metric_scoring)
+            if selection_value is not None:
+                if early_stopping_best is None:
+                    improved = True
+                elif metric_scoring == 'eer':
+                    improved = (
+                        selection_value
+                        < early_stopping_best - early_stopping_min_delta
+                    )
+                else:
+                    improved = (
+                        selection_value
+                        > early_stopping_best + early_stopping_min_delta
+                    )
+
+                if improved:
+                    early_stopping_best = selection_value
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+                    logger.info(
+                        "Early stopping counter: %s / %s",
+                        epochs_without_improvement,
+                        early_stopping_patience,
+                    )
+                    if epochs_without_improvement >= early_stopping_patience:
+                        logger.info(
+                            "Early stopping at epoch %s; best %s=%s.",
+                            epoch,
+                            metric_scoring,
+                            early_stopping_best,
+                        )
+                        break
     
     if best_metric is not None:
         logger.info("Stop Training on best Testing metric {}".format(parse_metric_for_print(best_metric))) 

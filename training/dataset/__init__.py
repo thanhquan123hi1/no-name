@@ -8,3 +8,4 @@ sys.path.append(project_root_dir)
 
 
 from .abstract_dataset import DeepfakeAbstractBaseDataset
+from .samplers import build_class_balanced_sampler

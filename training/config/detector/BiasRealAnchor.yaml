@@ -109,7 +109,7 @@ loss_func: cross_entropy
 losstype: ce_real_anchor_supcon_bias
 
 # metric
-metric_scoring: video_auc
+metric_scoring: auc
 
 # cuda
 ngpu: 1

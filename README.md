@@ -64,6 +64,20 @@ cross-entropy of weak/strong views plus a scheduled KL divergence from the
 detached weak-view prediction to the strong-view prediction. Evaluation uses a
 single image view.
 
+Train the artifact-preserving variant:
+
+```bash
+python training/train.py \
+  --detector_path training/config/detector/BiasArtifactConsistency.yaml \
+  --train_dataset "FaceForensics++" \
+  --test_dataset "Celeb-DF-v2"
+```
+
+`BiasArtifactConsistency` keeps bias-only CLIP adaptation, but restricts KL to
+confident weak predictions that agree with the ground-truth label. It uses
+class-balanced consistency and sampling, gives the artifact-preserving weak
+view more CE weight, and uses a milder strong augmentation policy.
+
 Optional fine-tuning from a checkpoint:
 
 ```bash

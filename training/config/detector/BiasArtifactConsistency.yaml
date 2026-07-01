@@ -1,15 +1,15 @@
 # model setting
 pretrained: null
-model_name: bias_consistency
+model_name: bias_artifact_consistency
 backbone_name: vit
 clip_model_name: openai/clip-vit-large-patch14
 
-# Bias-only adaptation. No LoRA or projection head is used.
+# Bias-only adaptation; preserve the original CLIP representation.
 use_lora: false
 train_backbone_bias: true
 strict_trainable_check: true
 
-# Guard the exact CLIP ViT-L/14 architecture used by this detector.
+# Guard the exact CLIP ViT-L/14 architecture.
 strict_clip_architecture: true
 expected_clip_hidden_size: 1024
 expected_clip_intermediate_size: 4096
@@ -23,19 +23,23 @@ expected_backbone_bias_params: 272384
 feature_dim: 1024
 normalize_eps: 0.000001
 
-# Cross-entropy settings.
+# Supervised classification. A balanced sampler handles class imbalance.
 weight_real: 1.0
 weight_fake: 1.0
-label_smoothing: 0.1
+label_smoothing: 0.05
+weak_ce_weight: 0.75
+strong_ce_weight: 0.25
 
-# Weak-to-strong logit consistency.
+# Artifact-aware weak-to-strong consistency.
 use_consistency: true
 use_consistency_views: true
 consistency_weak_flip_prob: 0.5
 consistency_temperature: 1.0
-consistency_confidence_threshold: 0.0
-alpha_consistency_max: 0.5
-alpha_consistency_start_epoch: 0
+consistency_confidence_threshold: 0.8
+consistency_require_teacher_correct: true
+consistency_class_balanced: true
+alpha_consistency_max: 0.2
+alpha_consistency_start_epoch: 2
 alpha_consistency_warmup_epochs: 3
 
 # backbone setting
@@ -63,10 +67,9 @@ all_dataset:
     UADFV,
   ]
 train_dataset: [FaceForensics++]
-test_dataset: [Celeb-DF-v2, FaceShifter, DeeperForensics-1.0]
+test_dataset: [Celeb-DF-v2]
 
 compression: c23
-# Two CLIP views are retained for backward, so start conservatively.
 train_batchSize: 64
 test_batchSize: 128
 workers: 8
@@ -77,18 +80,21 @@ resolution: 224
 with_mask: false
 with_landmark: false
 
-# Strong-view augmentation. The weak view only applies horizontal flip.
+# Approximate a 1:1 real/fake distribution without discarding fake methods.
+use_class_balanced_sampler: true
+
+# Artifact-preserving strong view. Weak view only applies horizontal flip.
 use_data_augmentation: true
 data_aug:
   flip_prob: 0.5
-  rotate_prob: 0.5
-  rotate_limit: [-10, 10]
-  blur_prob: 0.5
-  blur_limit: [3, 7]
-  brightness_prob: 0.5
-  brightness_limit: [-0.1, 0.1]
-  contrast_limit: [-0.1, 0.1]
-  quality_lower: 40
+  rotate_prob: 0.2
+  rotate_limit: [-5, 5]
+  blur_prob: 0.0
+  blur_limit: [3, 3]
+  brightness_prob: 0.2
+  brightness_limit: [-0.05, 0.05]
+  contrast_limit: [-0.05, 0.05]
+  quality_lower: 80
   quality_upper: 100
 
 # Official CLIP image normalization.
@@ -109,10 +115,12 @@ optimizer:
 # training config
 lr_scheduler: cosine
 scheduler_step_per_epoch: true
-lr_T_max: 10
+lr_T_max: 8
 lr_eta_min: 0.000001
-nEpochs: 10
+nEpochs: 8
 start_epoch: 0
+early_stopping_patience: 2
+early_stopping_min_delta: 0.0001
 save_epoch: 1
 rec_iter: 100
 logdir: /kaggle/tmp/logs
@@ -123,10 +131,10 @@ save_avg: true
 
 # loss function
 loss_func: cross_entropy
-losstype: ce_weak_strong_consistency_bias
+losstype: ce_artifact_aware_consistency_bias
 
-# metric
-metric_scoring: auc
+# Select and report checkpoints with the same video-level metric.
+metric_scoring: video_auc
 
 # cuda
 ngpu: 1

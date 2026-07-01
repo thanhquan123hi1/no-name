@@ -126,7 +126,7 @@ loss_func: cross_entropy
 losstype: ce_lora_bias_no_asy
 
 # metric
-metric_scoring: video_auc
+metric_scoring: auc
 
 # cuda
 ngpu: 1
