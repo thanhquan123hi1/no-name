@@ -1,0 +1,139 @@
+# model setting
+pretrained: null
+model_name: siglip_bias_consistency
+backbone_name: vit
+siglip_model_name: google/siglip-large-patch16-256
+
+# Bias-only adaptation. No LoRA or projection head is used.
+use_lora: false
+train_backbone_bias: true
+strict_trainable_check: true
+
+# Guard the exact SigLIP-L/16-256 architecture used by this detector.
+strict_siglip_architecture: true
+expected_siglip_hidden_size: 1024
+expected_siglip_image_size: 256
+expected_siglip_patch_size: 16
+
+# Do not set this unless you already counted SigLIP bias params exactly.
+# Different Transformers versions may expose names slightly differently.
+expected_backbone_bias_params: null
+
+# Direct normalized SigLIP vision feature: 1024 -> 2.
+feature_dim: 1024
+normalize_eps: 0.000001
+
+# Cross-entropy settings.
+weight_real: 1.0
+weight_fake: 1.0
+label_smoothing: 0.1
+
+# Weak-to-strong logit consistency.
+use_consistency: true
+use_consistency_views: true
+consistency_weak_flip_prob: 0.5
+consistency_temperature: 1.0
+consistency_confidence_threshold: 0.0
+alpha_consistency_max: 0.5
+alpha_consistency_start_epoch: 0
+alpha_consistency_warmup_epochs: 3
+
+# backbone setting
+backbone_config:
+  mode: original
+  num_classes: 2
+  inc: 3
+  dropout: false
+
+# dataset
+all_dataset:
+  [
+    FaceForensics++,
+    FF-F2F,
+    FF-DF,
+    FF-FS,
+    FF-NT,
+    FaceShifter,
+    DeepFakeDetection,
+    Celeb-DF-v1,
+    Celeb-DF-v2,
+    DFDCP,
+    DFDC,
+    DeeperForensics-1.0,
+    UADFV,
+  ]
+
+train_dataset: [FaceForensics++]
+test_dataset: [Celeb-DF-v2, FaceShifter, DeeperForensics-1.0]
+
+compression: c23
+
+# SigLIP-L/16-256 uses 256x256 input.
+# Token count is similar to CLIP ViT-L/14-224, so batch 16 can be tried first.
+train_batchSize: 64
+test_batchSize: 128
+workers: 8
+
+frame_num:
+  train: 8
+  test: 32
+
+resolution: 256
+with_mask: false
+with_landmark: false
+
+# Strong-view augmentation. The weak view only applies horizontal flip.
+use_data_augmentation: true
+data_aug:
+  flip_prob: 0.5
+  rotate_prob: 0.5
+  rotate_limit: [-10, 10]
+  blur_prob: 0.5
+  blur_limit: [3, 7]
+  brightness_prob: 0.5
+  brightness_limit: [-0.1, 0.1]
+  contrast_limit: [-0.1, 0.1]
+  quality_lower: 40
+  quality_upper: 100
+
+# Official SigLIP image normalization.
+mean: [0.5, 0.5, 0.5]
+std: [0.5, 0.5, 0.5]
+
+# optimizer config
+optimizer:
+  type: adam
+  adam:
+    lr: 0.0001
+    beta1: 0.9
+    beta2: 0.999
+    eps: 0.00000001
+    weight_decay: 0.0001
+    amsgrad: false
+
+# training config
+lr_scheduler: cosine
+scheduler_step_per_epoch: true
+lr_T_max: 10
+lr_eta_min: 0.000001
+nEpochs: 10
+start_epoch: 0
+save_epoch: 1
+rec_iter: 100
+logdir: /kaggle/tmp/logs
+manualSeed: 7749
+save_ckpt: true
+save_feat: true
+save_avg: true
+
+# loss function
+loss_func: cross_entropy
+losstype: ce_weak_strong_consistency_siglip_bias
+
+# metric
+metric_scoring: video_auc
+
+# cuda
+ngpu: 1
+cuda: true
+cudnn: true
