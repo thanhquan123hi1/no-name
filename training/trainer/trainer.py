@@ -44,7 +44,7 @@ class Trainer(object):
         scheduler,
         logger,
         metric_scoring='auc',
-        time_now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S'),
+        time_now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M'),
         swa_model=None
         ):
         # check if all the necessary components are implemented
@@ -68,18 +68,13 @@ class Trainer(object):
 
         # get current time
         self.timenow = time_now
-        # create directory path
-        if 'task_target' not in config:
-            self.log_dir = os.path.join(
-                self.config['log_dir'],
-                self.config['model_name'] + '_' + self.timenow
-            )
-        else:
-            task_str = f"_{config['task_target']}" if config['task_target'] is not None else ""
-            self.log_dir = os.path.join(
-                self.config['log_dir'],
-                self.config['model_name'] + task_str + '_' + self.timenow
-            )
+        # Keep logs, checkpoints, features, and TensorBoard data in the same
+        # model_seed_minute run directory created by train.py.
+        run_name = (
+            f"{self.config['model_name']}_"
+            f"{self.config['manualSeed']}_{self.timenow}"
+        )
+        self.log_dir = os.path.join(self.config['log_dir'], run_name)
         os.makedirs(self.log_dir, exist_ok=True)
 
     def get_writer(self, phase, dataset_key, metric_key):
