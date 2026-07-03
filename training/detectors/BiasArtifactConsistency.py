@@ -21,7 +21,6 @@ class CorrectnessAwareKLLoss(nn.Module):
         temperature: float = 1.0,
         confidence_threshold: float = 0.8,
         require_teacher_correct: bool = True,
-        class_balanced: bool = True,
     ) -> None:
         super().__init__()
         if temperature <= 0:
@@ -32,7 +31,6 @@ class CorrectnessAwareKLLoss(nn.Module):
         self.temperature = float(temperature)
         self.confidence_threshold = float(confidence_threshold)
         self.require_teacher_correct = bool(require_teacher_correct)
-        self.class_balanced = bool(class_balanced)
 
     @staticmethod
     def _masked_fraction(
@@ -79,15 +77,7 @@ class CorrectnessAwareKLLoss(nn.Module):
             selected = selected & teacher_correct
 
         if selected.any():
-            if self.class_balanced:
-                class_losses = []
-                for class_index in labels.unique(sorted=True):
-                    class_selected = selected & labels.eq(class_index)
-                    if class_selected.any():
-                        class_losses.append(per_sample_kl[class_selected].mean())
-                loss = torch.stack(class_losses).mean()
-            else:
-                loss = per_sample_kl[selected].mean()
+            loss = per_sample_kl[selected].mean()
         else:
             # Preserve a differentiable zero for the strong student branch.
             loss = strong_logits.sum() * 0.0
@@ -158,9 +148,6 @@ class BiasArtifactConsistencyDetector(BiasConsistencyDetector):
             ),
             require_teacher_correct=bool(
                 config.get("consistency_require_teacher_correct", True)
-            ),
-            class_balanced=bool(
-                config.get("consistency_class_balanced", True)
             ),
         )
 
@@ -289,4 +276,3 @@ class BiasArtifactConsistencyDetector(BiasConsistencyDetector):
             )
 
         return loss_dict
-

@@ -63,7 +63,7 @@ all_dataset:
     UADFV,
   ]
 train_dataset: [FaceForensics++]
-test_dataset: [Celeb-DF-v2, FaceShifter, DeeperForensics-1.0]
+test_dataset: [FaceForensics++]
 
 compression: c23
 # Two CLIP views are retained for backward, so start conservatively.

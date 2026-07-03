@@ -23,7 +23,7 @@ expected_backbone_bias_params: 272384
 feature_dim: 1024
 normalize_eps: 0.000001
 
-# Supervised classification. A balanced sampler handles class imbalance.
+# Supervised classification. The weak view carries most CE weight.
 weight_real: 1.0
 weight_fake: 1.0
 label_smoothing: 0.05
@@ -37,7 +37,6 @@ consistency_weak_flip_prob: 0.5
 consistency_temperature: 1.0
 consistency_confidence_threshold: 0.8
 consistency_require_teacher_correct: true
-consistency_class_balanced: false
 alpha_consistency_max: 0.2
 alpha_consistency_start_epoch: 2
 alpha_consistency_warmup_epochs: 3
@@ -67,7 +66,7 @@ all_dataset:
     UADFV,
   ]
 train_dataset: [FaceForensics++]
-test_dataset: [Celeb-DF-v2]
+test_dataset: [FaceForensics++]
 
 compression: c23
 train_batchSize: 64
@@ -79,9 +78,6 @@ frame_num:
 resolution: 224
 with_mask: false
 with_landmark: false
-
-# Approximate a 1:1 real/fake distribution without discarding fake methods.
-use_class_balanced_sampler: false
 
 # Artifact-preserving strong view. Weak view only applies horizontal flip.
 use_data_augmentation: true
@@ -134,7 +130,7 @@ loss_func: cross_entropy
 losstype: ce_artifact_aware_consistency_bias
 
 # Select and report checkpoints with the same video-level metric.
-metric_scoring: video_auc
+metric_scoring: auc
 
 # cuda
 ngpu: 1

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "training"
@@ -53,7 +54,6 @@ def detector_config():
         "consistency_temperature": 1.0,
         "consistency_confidence_threshold": 0.0,
         "consistency_require_teacher_correct": True,
-        "consistency_class_balanced": True,
         "alpha_consistency_max": 0.2,
         "alpha_consistency_start_epoch": 2,
         "alpha_consistency_warmup_epochs": 3,
@@ -96,25 +96,51 @@ def test_consistency_selects_only_confident_correct_teachers():
     loss_fn = CorrectnessAwareKLLoss(
         confidence_threshold=0.8,
         require_teacher_correct=True,
-        class_balanced=True,
     )
     weak_logits = torch.tensor(
-        [[5.0, 0.0], [0.0, 5.0], [0.0, 5.0], [0.1, 0.0]],
+        [
+            [5.0, 0.0],
+            [4.0, 0.0],
+            [0.0, 5.0],
+            [0.0, 5.0],
+            [0.1, 0.0],
+        ],
         requires_grad=True,
     )
     strong_logits = torch.tensor(
-        [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [1.0, 0.0]],
+        [
+            [1.0, 0.0],
+            [0.2, 1.4],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+        ],
         requires_grad=True,
     )
-    labels = torch.tensor([0, 1, 0, 0])
+    labels = torch.tensor([0, 0, 1, 0, 0])
+
+    with torch.no_grad():
+        teacher_prob = F.softmax(weak_logits / loss_fn.temperature, dim=1)
+        student_log_prob = F.log_softmax(
+            strong_logits / loss_fn.temperature,
+            dim=1,
+        )
+        per_sample_kl = F.kl_div(
+            student_log_prob,
+            teacher_prob,
+            reduction="none",
+        ).sum(dim=1) * (loss_fn.temperature**2)
+        expected_selected = torch.tensor([True, True, True, False, False])
+        expected_loss = per_sample_kl[expected_selected].mean()
 
     loss, diagnostics = loss_fn(weak_logits, strong_logits, labels)
     loss.backward()
 
-    assert diagnostics["consistency_confident_fraction"].item() == pytest.approx(0.75)
-    assert diagnostics["consistency_selected_fraction"].item() == pytest.approx(0.5)
-    assert diagnostics["teacher_accuracy"].item() == pytest.approx(0.75)
-    assert diagnostics["consistency_selected_real_fraction"].item() == pytest.approx(1 / 3)
+    assert loss.item() == pytest.approx(expected_loss.item())
+    assert diagnostics["consistency_confident_fraction"].item() == pytest.approx(0.8)
+    assert diagnostics["consistency_selected_fraction"].item() == pytest.approx(0.6)
+    assert diagnostics["teacher_accuracy"].item() == pytest.approx(0.8)
+    assert diagnostics["consistency_selected_real_fraction"].item() == pytest.approx(0.5)
     assert diagnostics["consistency_selected_fake_fraction"].item() == pytest.approx(1.0)
     assert weak_logits.grad is None
     assert strong_logits.grad is not None
@@ -190,3 +216,33 @@ def test_eval_uses_only_clean_weak_view():
     assert losses["loss_consistency"].item() == 0.0
     assert losses["alpha_consistency"].item() == 0.0
 
+
+def test_training_requires_strong_view():
+    detector = BiasArtifactConsistencyDetector(
+        detector_config(),
+        backbone=TinyBackbone(feature_dim=4),
+    )
+    detector.train()
+    batch = make_batch()
+    batch.pop("image_strong")
+
+    with pytest.raises(RuntimeError, match="image_strong"):
+        detector(batch)
+
+
+def test_consistency_collate_keeps_views_separate():
+    pytest.importorskip("lmdb")
+    from dataset.abstract_dataset import DeepfakeAbstractBaseDataset
+
+    batch = [
+        (torch.ones(3, 2, 2), torch.full((3, 2, 2), 2.0), 0, None, None),
+        (torch.full((3, 2, 2), 3.0), torch.full((3, 2, 2), 4.0), 1, None, None),
+    ]
+
+    collated = DeepfakeAbstractBaseDataset.collate_fn(batch)
+
+    assert collated["image"].shape == (2, 3, 2, 2)
+    assert collated["image_strong"].shape == (2, 3, 2, 2)
+    assert collated["label"].tolist() == [0, 1]
+    assert collated["image"][0, 0, 0, 0].item() == 1.0
+    assert collated["image_strong"][0, 0, 0, 0].item() == 2.0
