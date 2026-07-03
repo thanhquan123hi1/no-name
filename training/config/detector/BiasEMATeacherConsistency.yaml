@@ -1,10 +1,10 @@
 # model setting
 pretrained: null
-model_name: bias_artifact_consistency
+model_name: bias_ema_teacher_consistency
 backbone_name: vit
 clip_model_name: openai/clip-vit-large-patch14
 
-# Bias-only adaptation; preserve the original CLIP representation.
+# Bias-only adaptation; the EMA teacher is a frozen moving average of this student.
 use_lora: false
 train_backbone_bias: true
 strict_trainable_check: true
@@ -30,7 +30,7 @@ label_smoothing: 0.05
 weak_ce_weight: 0.75
 strong_ce_weight: 0.25
 
-# Artifact-aware weak-to-strong consistency.
+# EMA teacher weak-to-strong consistency.
 use_consistency: true
 use_consistency_views: true
 consistency_weak_flip_prob: 0.5
@@ -40,6 +40,7 @@ consistency_require_teacher_correct: true
 alpha_consistency_max: 0.2
 alpha_consistency_start_epoch: 2
 alpha_consistency_warmup_epochs: 3
+ema_decay: 0.999
 
 # backbone setting
 backbone_config:
@@ -127,9 +128,9 @@ save_avg: true
 
 # loss function
 loss_func: cross_entropy
-losstype: ce_artifact_aware_consistency_bias
+losstype: ce_ema_teacher_artifact_consistency_bias
 
-# Select and report checkpoints with the same video-level metric.
+# metric
 metric_scoring: auc
 
 # cuda

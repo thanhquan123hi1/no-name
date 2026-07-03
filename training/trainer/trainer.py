@@ -189,6 +189,7 @@ class Trainer(object):
                     self.optimizer.first_step(zero_grad=True)
                 else:
                     self.optimizer.second_step(zero_grad=True)
+            self.after_optimizer_step()
             return losses_first, pred_first
         else:
 
@@ -200,9 +201,15 @@ class Trainer(object):
             self.optimizer.zero_grad()
             losses['overall'].backward()
             self.optimizer.step()
+            self.after_optimizer_step()
 
 
             return losses,predictions
+
+    def after_optimizer_step(self):
+        model = self.model.module if type(self.model) is DDP else self.model
+        if hasattr(model, 'update_ema_teacher'):
+            model.update_ema_teacher()
 
 
     def train_epoch(

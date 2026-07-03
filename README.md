@@ -79,6 +79,19 @@ KL over the selected samples like `BiasConsistency`, gives the
 artifact-preserving weak view more CE weight, and uses a milder strong
 augmentation policy.
 
+Train the EMA-teacher variant:
+
+```bash
+python training/train.py \
+  --detector_path training/config/detector/BiasEMATeacherConsistency.yaml \
+  --train_dataset "FaceForensics++" \
+  --test_dataset "FaceForensics++"
+```
+
+`BiasEMATeacherConsistency` keeps the artifact-preserving objective, but the
+weak-view teacher is a frozen exponential moving average of the student model
+instead of the current student weak branch.
+
 Optional fine-tuning from a checkpoint:
 
 ```bash

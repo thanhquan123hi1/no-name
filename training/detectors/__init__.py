@@ -11,3 +11,4 @@ from .BiasLoraAsy import BiasLoraAsyDetector
 from .BiasRealAnchor import BiasRealAnchorDetector
 from .BiasConsistency import BiasConsistencyDetector
 from .BiasArtifactConsistency import BiasArtifactConsistencyDetector
+from .BiasEMATeacherConsistency import BiasEMATeacherConsistencyDetector
