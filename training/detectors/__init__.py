@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 current_file_path = os.path.abspath(__file__)
 parent_dir = os.path.dirname(os.path.dirname(current_file_path))
@@ -13,3 +13,5 @@ from .BiasConsistency import BiasConsistencyDetector
 from .BiasMultiLayerConsistency import BiasMultiLayerConsistencyDetector
 from .BiasArtifactConsistency import BiasArtifactConsistencyDetector
 from .BiasEMATeacherConsistency import BiasEMATeacherConsistencyDetector
+from .BiasC2PHsic import BiasC2PHsicDetector
+
