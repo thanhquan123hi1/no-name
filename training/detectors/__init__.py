@@ -13,5 +13,6 @@ from .BiasConsistency import BiasConsistencyDetector
 from .BiasMultiLayerConsistency import BiasMultiLayerConsistencyDetector
 from .BiasArtifactConsistency import BiasArtifactConsistencyDetector
 from .BiasEMATeacherConsistency import BiasEMATeacherConsistencyDetector
+from .BiasEMAJSDConsistency import BiasEMAJSDConsistencyDetector
 from .BiasC2PHsic import BiasC2PHsicDetector
 

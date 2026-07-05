@@ -1,0 +1,139 @@
+# model setting
+pretrained: null
+model_name: bias_ema_jsd_consistency
+backbone_name: vit
+clip_model_name: openai/clip-vit-large-patch14
+
+# Bias-only adaptation; the EMA teacher is a frozen moving average of this student.
+use_lora: false
+train_backbone_bias: true
+strict_trainable_check: true
+
+# Guard the exact CLIP ViT-L/14 architecture.
+strict_clip_architecture: true
+expected_clip_hidden_size: 1024
+expected_clip_intermediate_size: 4096
+expected_clip_num_hidden_layers: 24
+expected_clip_num_attention_heads: 16
+expected_clip_image_size: 224
+expected_clip_patch_size: 14
+expected_backbone_bias_params: 272384
+
+# Direct normalized post-LayerNorm CLS feature: 1024 -> 2.
+feature_dim: 1024
+normalize_eps: 0.000001
+
+# Supervised classification. The weak view carries most CE weight.
+weight_real: 1.0
+weight_fake: 1.0
+label_smoothing: 0.05
+weak_ce_weight: 0.75
+strong_ce_weight: 0.25
+
+# EMA teacher weak-to-strong Jensen-Shannon consistency.
+use_consistency: true
+use_consistency_views: true
+consistency_weak_flip_prob: 0.5
+consistency_temperature: 1.0
+consistency_confidence_threshold: 0.8
+consistency_require_teacher_correct: true
+alpha_consistency_max: 0.2
+alpha_consistency_start_epoch: 2
+alpha_consistency_warmup_epochs: 3
+ema_decay: 0.999
+
+# backbone setting
+backbone_config:
+  mode: original
+  num_classes: 2
+  inc: 3
+  dropout: false
+
+# dataset
+all_dataset:
+  [
+    FaceForensics++,
+    FF-F2F,
+    FF-DF,
+    FF-FS,
+    FF-NT,
+    FaceShifter,
+    DeepFakeDetection,
+    Celeb-DF-v1,
+    Celeb-DF-v2,
+    DFDCP,
+    DFDC,
+    DeeperForensics-1.0,
+    UADFV,
+  ]
+train_dataset: [FaceForensics++]
+test_dataset: [FaceForensics++]
+
+compression: c23
+train_batchSize: 64
+test_batchSize: 128
+workers: 8
+frame_num:
+  train: 8
+  test: 32
+resolution: 224
+with_mask: false
+with_landmark: false
+
+# Artifact-preserving strong view. Weak view only applies horizontal flip.
+use_data_augmentation: true
+data_aug:
+  flip_prob: 0.5
+  rotate_prob: 0.2
+  rotate_limit: [-5, 5]
+  blur_prob: 0.0
+  blur_limit: [3, 3]
+  brightness_prob: 0.2
+  brightness_limit: [-0.05, 0.05]
+  contrast_limit: [-0.05, 0.05]
+  quality_lower: 80
+  quality_upper: 100
+
+# Official CLIP image normalization.
+mean: [0.48145466, 0.4578275, 0.40821073]
+std: [0.26862954, 0.26130258, 0.27577711]
+
+# optimizer config
+optimizer:
+  type: adam
+  adam:
+    lr: 0.0001
+    beta1: 0.9
+    beta2: 0.999
+    eps: 0.00000001
+    weight_decay: 0.0001
+    amsgrad: false
+
+# training config
+lr_scheduler: cosine
+scheduler_step_per_epoch: true
+lr_T_max: 8
+lr_eta_min: 0.000001
+nEpochs: 8
+start_epoch: 0
+early_stopping_patience: 0
+early_stopping_min_delta: 0.0001
+save_epoch: 1
+rec_iter: 100
+logdir: /kaggle/tmp/logs
+manualSeed: 7749
+save_ckpt: true
+save_feat: true
+save_avg: true
+
+# loss function
+loss_func: cross_entropy
+losstype: ce_ema_teacher_artifact_jsd_consistency_bias
+
+# metric
+metric_scoring: auc
+
+# cuda
+ngpu: 1
+cuda: true
+cudnn: true
