@@ -1,0 +1,140 @@
+# model setting
+pretrained: null
+model_name: bias_consistency
+backbone_name: vit
+clip_model_name: openai/clip-vit-large-patch14
+
+# Bias-only adaptation. No LoRA or projection head is used.
+use_lora: false
+train_backbone_bias: true
+strict_trainable_check: true
+
+# Guard the exact CLIP ViT-L/14 architecture used by this detector.
+strict_clip_architecture: true # Bật kiểm tra nghiêm ngặt kiến trúc CLIP. Khi bật true, code sẽ gọi _validate_clip_architecture() trong BiasConsistency.py.
+expected_clip_hidden_size: 1024
+expected_clip_intermediate_size: 4096
+expected_clip_num_hidden_layers: 24
+expected_clip_num_attention_heads: 16   # multi head
+expected_clip_image_size: 224
+expected_clip_patch_size: 14 #Ảnh đầu vào được chia thành các patch kích thước 14x14. Tên ViT-L/14 nghĩa là Vision Transformer Large, patch size 14.
+expected_backbone_bias_params: 272384
+
+# Direct normalized post-LayerNorm CLS feature: 1024 -> 2.
+# etector lấy feature 1024 chiều từ CLIP vision model, normalize bằng L2, rồi đưa qua classifier tuyến tính 1024 -> 2 để phân lo
+feature_dim: 1024
+normalize_eps: 0.000001
+
+# Cross-entropy settings.
+# Nghĩa là loss của ảnh real và ảnh fake có trọng số bằng nhau.
+weight_real: 1.0
+weight_fake: 1.0
+label_smoothing: 0.1
+
+# Weak-to-strong logit consistency.
+
+use_consistency: true
+# tạo augemtation mạnh và yếu
+use_consistency_views: true
+consistency_weak_flip_prob: 0.5
+consistency_temperature: 1.0
+#thì chỉ những sample weak view dự đoán đủ tự tin mới được dùng:
+consistency_confidence_threshold: 0.0
+alpha_consistency_max: 0.5
+alpha_consistency_start_epoch: 0
+alpha_consistency_warmup_epochs: 3
+
+# backbone setting
+backbone_config:
+  mode: original
+  num_classes: 2
+  inc: 3
+  dropout: false
+
+# dataset
+all_dataset:
+  [
+    FaceForensics++,
+    FF-F2F,
+    FF-DF,
+    FF-FS,
+    FF-NT,
+    FaceShifter,
+    DeepFakeDetection,
+    Celeb-DF-v1,
+    Celeb-DF-v2,
+    DFDCP,
+    DFDC,
+    DeeperForensics-1.0,
+    UADFV,
+  ]
+train_dataset: [FaceForensics++]
+test_dataset: [FaceForensics++]
+
+compression: c23
+# Two CLIP views are retained for backward, so start conservatively.
+train_batchSize: 64
+test_batchSize: 128
+workers: 8
+frame_num:
+  train: 8
+  test: 32
+resolution: 224
+with_mask: false
+with_landmark: false
+
+# Artifact-aware strong-view augmentation. The weak view only applies horizontal
+# flip; the strong view uses mild transforms that preserve forensic traces.
+use_data_augmentation: true
+data_aug:
+  flip_prob: 0.5
+  rotate_prob: 0.2
+  rotate_limit: [-3, 3]
+  blur_prob: 0.05
+  blur_limit: [3, 3]
+  brightness_prob: 0.2
+  brightness_limit: [-0.03, 0.03]
+  contrast_limit: [-0.03, 0.03]
+  quality_lower: 70
+  quality_upper: 100
+
+# Official CLIP image normalization.
+mean: [0.48145466, 0.4578275, 0.40821073]
+std: [0.26862954, 0.26130258, 0.27577711]
+
+# optimizer config
+optimizer:
+  type: adam
+  adam:
+    lr: 0.0001
+    beta1: 0.9
+    beta2: 0.999
+    eps: 0.00000001
+    weight_decay: 0.0001
+    amsgrad: false
+
+# training config
+lr_scheduler: cosine
+scheduler_step_per_epoch: true
+lr_T_max: 10
+lr_eta_min: 0.000001
+nEpochs: 10
+start_epoch: 0
+save_epoch: 1
+rec_iter: 100
+logdir: /kaggle/tmp/logs
+manualSeed: 7749
+save_ckpt: true
+save_feat: true
+save_avg: true
+
+# loss function
+loss_func: cross_entropy
+losstype: ce_weak_strong_consistency_bias_artifact_aware_aug
+
+# metric
+metric_scoring: auc
+
+# cuda
+ngpu: 1
+cuda: true
+cudnn: true
