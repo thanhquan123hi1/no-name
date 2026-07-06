@@ -7,6 +7,7 @@ sys.path.append(parent_dir)
 sys.path.append(project_root_dir)
 
 from metrics.registry import DETECTOR
+from .BiasOnly import BiasOnlyDetector
 from .BiasLoraAsy import BiasLoraAsyDetector
 from .BiasRealAnchor import BiasRealAnchorDetector
 from .BiasConsistency import BiasConsistencyDetector
